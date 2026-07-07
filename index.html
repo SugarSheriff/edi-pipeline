@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tape Read — EDI X12 Parsing &amp; Validation Demo</title>
+<meta name="description" content="A live simulation of an EDI X12 document (850 Purchase Order) being parsed, validated, and mapped to structured JSON. Built by Liam Hulsey.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="nav">
+  <div class="wrap nav-inner">
+    <span class="brand">tape<span class="brand-dim">/read</span></span>
+    <div class="nav-links">
+      <a href="#demo">Demo</a>
+      <a href="#segments">Segments</a>
+      <a href="#code">Code</a>
+      <a href="https://sugarsheriff.github.io/lookatme/">Back to portfolio ↗</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow">EDI X12 · 850 Purchase Order</span>
+    <h1>Every segment is a promise.<br>Break one, and the order never arrives.</h1>
+    <p class="hero-sub">A trading partner sends a fixed-width X12 document over AS2. Somewhere between the wire and your ERP, it has to be torn open, read segment by segment, and proven correct before anything downstream trusts it. This is that read-head, live.</p>
+    <div class="hero-cta">
+      <a class="btn btn-primary" href="#demo">Watch it parse ↓</a>
+      <a class="btn btn-ghost" href="https://github.com/SugarSheriff/edi-pipeline" target="_blank" rel="noopener">Source on GitHub</a>
+    </div>
+  </div>
+</header>
+
+<main>
+  <section id="demo">
+    <div class="wrap">
+      <div class="section-head">
+        <span class="section-label">Live read</span>
+        <h2>Raw tape → structured order</h2>
+        <p class="section-desc">This is a real, valid 850 (with delimiters as sent — segment terminator <code>~</code>, element separator <code>*</code>). Press play and the read-head scans it segment by segment, feeding a typed object on the right. Break a required segment to see validation catch it.</p>
+      </div>
+
+      <div class="scanner">
+        <div class="tape-panel">
+          <div class="tape-toolbar">
+            <button id="playBtn" class="btn btn-primary btn-sm">▶ Run tape</button>
+            <button id="breakBtn" class="btn btn-ghost btn-sm">Snap a segment</button>
+            <button id="resetBtn" class="btn btn-ghost btn-sm">Reset</button>
+          </div>
+          <div class="tape-track" id="tapeTrack" aria-live="polite"></div>
+        </div>
+
+        <div class="json-panel">
+          <div class="json-header">
+            <span>parsed_output.json</span>
+            <span class="json-status" id="jsonStatus">idle</span>
+          </div>
+          <pre class="json-body" id="jsonBody">// press "Run tape" to begin</pre>
+        </div>
+      </div>
+
+      <div class="log-panel">
+        <div class="json-header"><span>validation_log</span></div>
+        <div class="log-body" id="logBody">
+          <div class="log-line log-muted">Waiting for a run…</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="segments">
+    <div class="wrap">
+      <div class="section-head">
+        <span class="section-label">Reference</span>
+        <h2>What each segment is actually saying</h2>
+        <p class="section-desc">X12 reads like shorthand until you've stared at enough of it. Here's the vocabulary this demo leans on.</p>
+      </div>
+      <div class="seg-grid">
+        <div class="seg-card">
+          <span class="seg-tag">ISA</span>
+          <h3>Interchange envelope</h3>
+          <p>The outermost wrapper — sender ID, receiver ID, control number. Get this wrong and the whole file is unroutable, not just unreadable.</p>
+        </div>
+        <div class="seg-card">
+          <span class="seg-tag">GS / GE</span>
+          <h3>Functional group</h3>
+          <p>Groups same-type transactions together (all 850s in one group). The control numbers here have to match on close, or your ack rejects the whole group.</p>
+        </div>
+        <div class="seg-card">
+          <span class="seg-tag">ST / SE</span>
+          <h3>Transaction set</h3>
+          <p>One actual document — one purchase order. SE's segment count has to match reality; it's the checksum nobody notices until it's wrong.</p>
+        </div>
+        <div class="seg-card">
+          <span class="seg-tag">BEG</span>
+          <h3>Beginning segment</h3>
+          <p>PO number, order type, date. Miss this and there's no anchor to reconcile against when the vendor calls asking "did you get order 4471?"</p>
+        </div>
+        <div class="seg-card">
+          <span class="seg-tag">PO1</span>
+          <h3>Line item</h3>
+          <p>Quantity, unit, price, product ID. Repeats once per line — this is where most real-world mapping bugs live, because the loop is easy to get almost right.</p>
+        </div>
+        <div class="seg-card">
+          <span class="seg-tag">N1 / N3 / N4</span>
+          <h3>Party &amp; address</h3>
+          <p>Who it's for and where it ships. Optional in the spec, load-bearing in practice — ship-to errors are the ones warehouses call about.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="code">
+    <div class="wrap">
+      <div class="section-head">
+        <span class="section-label">Under the tape</span>
+        <h2>The building blocks, for real</h2>
+        <p class="section-desc">The demo above is a simulation. These are the actual pieces you'd wire into a production pipeline — a segment reader, a typed contract for the output, and the job that watches it run unattended.</p>
+      </div>
+
+      <div class="code-tabs">
+        <button class="tab-btn active" data-tab="csharp">X12Reader.cs</button>
+        <button class="tab-btn" data-tab="typescript">edi850.contract.ts</button>
+        <button class="tab-btn" data-tab="powershell">Watch-EdiInbox.ps1</button>
+      </div>
+
+      <div class="code-panels">
+        <div class="code-panel active" data-panel="csharp">
+          <p class="code-note">Splits on segment/element delimiters read from ISA itself rather than hardcoded — trading partners don't all use <code>~</code> and <code>*</code>, and assuming they do is how you get silent truncation on day one.</p>
+          <pre><code>public sealed class X12Reader
+{
+    private readonly char _segTerm;
+    private readonly char _elemSep;
+
+    public X12Reader(string rawDocument)
+    {
+        // ISA is fixed-width; delimiters live at known offsets,
+        // not guessed from config that will eventually drift.
+        _elemSep = rawDocument[3];
+        _segTerm = rawDocument[105];
+    }
+
+    public IEnumerable&lt;Segment&gt; Read(string rawDocument)
+    {
+        foreach (var raw in rawDocument.Split(_segTerm,
+                     StringSplitOptions.RemoveEmptyEntries))
+        {
+            var elements = raw.Split(_elemSep);
+            yield return new Segment(elements[0], elements[1..]);
+        }
+    }
+}
+
+public readonly record struct Segment(string Id, string[] Elements)
+{
+    public string this[int i] => i &lt; Elements.Length ? Elements[i] : string.Empty;
+}
+</code></pre>
+        </div>
+
+        <div class="code-panel" data-panel="typescript">
+          <p class="code-note">The contract downstream systems actually consume. Required fields are non-optional on purpose — a mapper that "just" marks everything optional pushes the missing-field bug three services further down, where it's much harder to trace back.</p>
+          <pre><code>export interface Edi850PurchaseOrder {
+  poNumber: string;
+  poDate: string;
+  orderType: "SA" | "RL" | "NE";
+  shipTo: Address;
+  lines: PurchaseOrderLine[];
+}
+
+export interface PurchaseOrderLine {
+  lineNumber: number;
+  quantity: number;
+  unitOfMeasure: string;
+  unitPrice: number;
+  productId: string;
+}
+
+export interface Address {
+  name: string;
+  street: string;
+  city: string;
+  state: string;
+  postalCode: string;
+}
+
+export function validate(po: Partial&lt;Edi850PurchaseOrder&gt;): string[] {
+  const errors: string[] = [];
+  if (!po.poNumber) errors.push("BEG02: missing PO number");
+  if (!po.lines?.length) errors.push("PO1: no line items found");
+  po.lines?.forEach((l, i) => {
+    if (!l.productId) errors.push(`PO1 loop ${i + 1}: missing product ID`);
+  });
+  return errors;
+}
+</code></pre>
+        </div>
+
+        <div class="code-panel" data-panel="powershell">
+          <p class="code-note">The unglamorous half of any EDI pipeline: nobody's watching the inbox folder at 2am, so the script has to notice a stuck file itself and say so loudly.</p>
+          <pre><code>param(
+    [string]$InboxPath = "\\edi-server\inbound\850",
+    [int]$StaleMinutes = 15
+)
+
+$stuck = Get-ChildItem -Path $InboxPath -Filter *.edi |
+    Where-Object { $_.LastWriteTime -lt (Get-Date).AddMinutes(-$StaleMinutes) }
+
+if ($stuck) {
+    foreach ($file in $stuck) {
+        Write-Warning "Stuck file: $($file.Name), age $([math]::Round(((Get-Date) - $file.LastWriteTime).TotalMinutes)) min"
+    }
+    Send-MailMessage -To "integrations-oncall@company.com" `
+        -Subject "EDI inbox has $($stuck.Count) stuck file(s)" `
+        -Body ($stuck.Name -join "`n") `
+        -SmtpServer "smtp.company.com" -From "edi-monitor@company.com"
+    exit 1
+}
+
+Write-Output "Inbox clear — $(Get-Date -Format u)"
+exit 0
+</code></pre>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="about-repo">
+    <div class="wrap">
+      <div class="section-head">
+        <span class="section-label">Why this exists</span>
+        <h2>The unglamorous middle of integration work</h2>
+        <p class="section-desc">Most integration demos show the happy path between two shiny APIs. EDI is the opposite end of the spectrum — 40-year-old fixed-width formats, delimiters that vary by trading partner, and validation that has to happen before a single field reaches your ERP. It's less visually exciting than a webhook diagram, and it's most of what actually keeps supply chains running. This repo is for that half of the job.</p>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="footer">
+  <div class="wrap footer-inner">
+    <span>Built by <a href="https://sugarsheriff.github.io/lookatme/">Liam Hulsey</a> — integration engineer working across SAP Business One, Wrike, SQL Server, and EDI.</span>
+    <a href="https://github.com/SugarSheriff/edi-pipeline" target="_blank" rel="noopener">GitHub ↗</a>
+  </div>
+</footer>
+
+<script src="script.js"></script>
+</body>
+</html>
