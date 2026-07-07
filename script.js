@@ -1,18 +1,51 @@
-// --- Raw EDI 850 document (simplified fixed delimiters: * element, ~ segment) ---
-const RAW_SEGMENTS = [
-  "ISA*00*          *00*          *ZZ*SENDERID       *ZZ*RECEIVERID     *260707*1200*U*00401*000000001*0*P*>",
-  "GS*PO*SENDERID*RECEIVERID*20260707*1200*1*X*004010",
-  "ST*850*0001",
-  "BEG*00*SA*4471**20260707",
-  "N1*ST*Overland Park Distribution Center",
-  "N3*8801 Renner Blvd",
-  "N4*Overland Park*KS*66219",
-  "PO1*1*50*EA*12.50**BP*SKU-88231",
-  "PO1*2*10*CS*44.00**BP*SKU-77410",
-  "SE*9*0001",
-  "GE*1*1",
-  "IEA*1*000000001"
+// --- Randomized EDI 850 document generator (simplified fixed delimiters: * element, ~ segment) ---
+const PARTNERS = ["SENDERID", "VENDORCO", "ACMESUPPLY", "NORTHBAY", "RIVERPARTS"];
+const RECEIVERS = ["RECEIVERID", "OURDISTCO"];
+const SHIP_TOS = [
+  { name: "Overland Park Distribution Center", street: "8801 Renner Blvd", city: "Overland Park", state: "KS", postalCode: "66219" },
+  { name: "Wichita Fulfillment Center", street: "2200 S Rock Rd", city: "Wichita", state: "KS", postalCode: "67207" },
+  { name: "Denver Regional Warehouse", street: "4750 Peoria St", city: "Denver", state: "CO", postalCode: "80239" },
+  { name: "Dallas Cross-Dock", street: "1150 Trinity Mills Rd", city: "Dallas", state: "TX", postalCode: "75038" }
 ];
+const UNITS = ["EA", "CS", "BX", "PL"];
+
+function rand(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
+function pick(arr) { return arr[rand(0, arr.length - 1)]; }
+
+function generateDocument() {
+  const poNumber = String(rand(1000, 9999));
+  const sender = pick(PARTNERS);
+  const receiver = pick(RECEIVERS);
+  const control = String(rand(1, 999999999)).padStart(9, "0");
+  const shipTo = pick(SHIP_TOS);
+  const today = "20260707"; // demo date
+
+  const lineCount = rand(2, 4);
+  const lines = [];
+  for (let i = 0; i < lineCount; i++) {
+    lines.push(
+      `PO1*${i + 1}*${rand(5, 200)}*${pick(UNITS)}*${(rand(500, 9999) / 100).toFixed(2)}**BP*SKU-${rand(10000, 99999)}`
+    );
+  }
+
+  const segCount = 6 + lines.length;
+
+  return [
+    `ISA*00*          *00*          *ZZ*${sender.padEnd(15)}*ZZ*${receiver.padEnd(15)}*260707*1200*U*00401*${control}*0*P*>`,
+    `GS*PO*${sender}*${receiver}*${today}*1200*1*X*004010`,
+    `ST*850*0001`,
+    `BEG*00*SA*${poNumber}**${today}`,
+    `N1*ST*${shipTo.name}`,
+    `N3*${shipTo.street}`,
+    `N4*${shipTo.city}*${shipTo.state}*${shipTo.postalCode}`,
+    ...lines,
+    `SE*${segCount}*0001`,
+    `GE*1*1`,
+    `IEA*1*${control}`
+  ];
+}
+
+let RAW_SEGMENTS = generateDocument();
 
 const tapeTrack = document.getElementById("tapeTrack");
 const jsonBody = document.getElementById("jsonBody");
@@ -24,11 +57,12 @@ const resetBtn = document.getElementById("resetBtn");
 
 let broken = false;
 let running = false;
+let snapMode = "BEG"; // which segment type gets snapped this round: BEG or N1
 
 function currentSegments() {
   if (!broken) return RAW_SEGMENTS.slice();
-  // Snap out the BEG segment to simulate a dropped/corrupt segment
-  return RAW_SEGMENTS.filter(s => !s.startsWith("BEG*"));
+  if (snapMode === "BEG") return RAW_SEGMENTS.filter(s => !s.startsWith("BEG*"));
+  return RAW_SEGMENTS.filter(s => !s.startsWith("N1*")); // drops ship-to name
 }
 
 function renderTape(segments) {
@@ -51,6 +85,7 @@ function log(msg, cls) {
 }
 
 function resetState() {
+  RAW_SEGMENTS = generateDocument();
   broken = false;
   running = false;
   renderTape(currentSegments());
@@ -139,6 +174,7 @@ async function runTape() {
 
   // Validate the fully-parsed object
   if (!po.poNumber) errors.push("BEG02: missing PO number — required to reconcile against trading partner");
+  if (!po.shipTo.name) errors.push("N102: missing ship-to name — N3/N4 arrived with no N1 to anchor them");
   if (!po.lines.length) errors.push("PO1: no line items found");
   po.lines.forEach((l, i) => {
     if (!l.productId) errors.push(`PO1 loop ${i + 1}: missing product ID`);
@@ -148,8 +184,7 @@ async function runTape() {
     jsonStatus.textContent = "failed validation";
     jsonStatus.style.color = "var(--err)";
     errors.forEach(e => log("✕ " + e, "log-err"));
-    // Mark the segment where BEG should have been, if it's missing entirely
-    if (!po.poNumber) {
+    if (!po.poNumber || !po.shipTo.name) {
       log("→ document rejected before reaching the ERP. A 997 functional acknowledgment goes back to the trading partner with these errors.", "log-err");
     }
   } else {
@@ -167,10 +202,11 @@ playBtn.addEventListener("click", runTape);
 breakBtn.addEventListener("click", () => {
   if (running) return;
   broken = !broken;
+  if (broken) snapMode = pick(["BEG", "N1"]);
   breakBtn.textContent = broken ? "Un-snap segment" : "Snap a segment";
   renderTape(currentSegments());
   jsonBody.textContent = broken
-    ? '// BEG segment removed from the tape — press "Run tape" to see validation catch it'
+    ? `// ${snapMode} segment removed from the tape — press "Run tape" to see validation catch it`
     : '// press "Run tape" to begin';
   jsonStatus.textContent = broken ? "tape altered" : "idle";
   jsonStatus.style.color = broken ? "var(--err)" : "var(--accent)";
